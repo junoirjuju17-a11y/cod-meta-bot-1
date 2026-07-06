@@ -265,13 +265,19 @@ class WZStatsScraper:
             text_values = [item.value for item in window if item.kind in {"text", "link"}]
             image = next((item for item in window if item.kind == "image" and (item.src or item.alt)), None)
             displayed_name = self._best_name_from_html_window(name, text_values, image.alt if image else "")
+            weapon_type = self._find_weapon_type(" ".join(text_values))
+            range_role, raw_range_text = self._find_range_role_from_sources(
+                [token.value, *text_values[:14]],
+                displayed_name or name,
+            )
 
             raw_weapons.append(
                 {
                     "name": displayed_name or name,
                     "tier": current_tier,
-                    "weaponType": self._find_weapon_type(" ".join(text_values)),
-                    "rangeRole": self._find_range_role(" ".join(text_values)),
+                    "weaponType": weapon_type,
+                    "rangeRole": range_role,
+                    "rangeRaw": raw_range_text,
                     "imageUrl": image.src if image else "",
                     "url": url,
                 }
@@ -711,6 +717,18 @@ class WZStatsScraper:
             if tier and tier not in {"META", "S+", "S", "A+", "A", "B+", "B", "C+", "C", "D+", "D"}:
                 tier = ""
 
+            final_range_role = self._resolve_range_role(
+                str(item.get("rangeRole", "")),
+                str(item.get("weaponType", "")),
+            )
+            logger.debug(
+                "WZStats range detection: weapon=%s | type=%s | raw_range=%s | final_range=%s",
+                name,
+                self._clean_text(str(item.get("weaponType", ""))) or "Inconnu",
+                self._clean_text(str(item.get("rangeRaw", ""))) or "Aucun",
+                final_range_role,
+            )
+
             weapons.append(
                 Weapon(
                     name=name,
@@ -719,10 +737,7 @@ class WZStatsScraper:
                     image_url=urljoin(self.base_url, str(item.get("imageUrl", ""))),
                     url=url,
                     rank=len(weapons) + 1,
-                    range_role=self._resolve_range_role(
-                        str(item.get("rangeRole", "")),
-                        str(item.get("weaponType", "")),
-                    ),
+                    range_role=final_range_role,
                     build=dict(item.get("build", {})) if isinstance(item.get("build"), dict) else {},
                 )
             )
@@ -795,19 +810,32 @@ class WZStatsScraper:
 
         return ""
 
-    def _find_range_role(self, value: str) -> str:
-        normalized = self._normalize_range_text(value)
+    def _find_range_role_from_sources(self, values: list[str], loadout_name: str) -> tuple[str, str]:
+        for value in values:
+            range_role = self._range_role_from_wzstats_text(value)
+            if range_role:
+                return range_role, value
 
-        wzstats_patterns = [
-            (r"\bsniper\s+support\b|\bsupport\s+sniper\b", "Courte portée"),
-            (r"\bclose\s+range\b|\bshort\s+range\b|\bcqc\b|\bcq\b|\bcourte\s+portee\b", "Courte portée"),
-            (r"\blong\s+range\b|\blongue\s+portee\b", "Longue portée"),
-            (r"\bmedium\s+range\b|\bmid\s+range\b|\bmoyenne\s+portee\b", "Moyenne portée"),
+        range_role = self._range_role_from_wzstats_text(loadout_name)
+        if range_role:
+            return range_role, loadout_name
+
+        return "", ""
+
+    def _range_role_from_wzstats_text(self, value: str) -> str:
+        normalized = self._normalize_range_text(value)
+        if not normalized:
+            return ""
+
+        patterns = [
+            (r"\bsniper\s+support\b", "Moyenne portée"),
+            (r"\blong\s+range\b|\blongue\s+portee\b|^long$", "Longue portée"),
+            (r"\bclose\s+range\b|\bcourte\s+portee\b|^close$", "Courte portée"),
             (r"\bsupport\b", "Moyenne portée"),
-            (r"\bbalanced\b|\bflex\b|\bversatile\b|\bpolyvalente?\b", "Polyvalente"),
+            (r"\bflex\b|\bbalanced\b|\bversatile\b|\bpolyvalente?\b", "Polyvalente"),
         ]
 
-        for pattern, range_role in wzstats_patterns:
+        for pattern, range_role in patterns:
             if re.search(pattern, normalized):
                 return range_role
 
@@ -819,12 +847,12 @@ class WZStatsScraper:
             return explicit_range
 
         normalized_type = self._clean_text(weapon_type).casefold()
-        if normalized_type in {"ar", "lmg", "marksman", "sniper"}:
-            return "Longue portée"
         if normalized_type in {"smg", "shotgun", "pistol"}:
             return "Courte portée"
-        if normalized_type == "br":
-            return "Moyenne / longue portée"
+        if normalized_type in {"sniper", "marksman", "lmg"}:
+            return "Longue portée"
+        if normalized_type in {"ar", "assault rifle", "br", "battle rifle"}:
+            return "Polyvalente"
 
         return "Polyvalente"
 
