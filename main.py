@@ -103,33 +103,50 @@ class CodMetaBot(discord.Client):
         entered_top5 = current_top5 - previous_top5
         left_top5 = previous_top5 - current_top5
 
-        if not entered_top5 and not left_top5:
-            self.db.replace_current_top5(weapons[:5])
-            logger.info("No Top 5 META change found")
-            return
-
         publishable_weapons = [
             weapon
             for weapon in weapons[:5]
-            if weapon.identity in entered_top5 and not self.db.was_published(weapon.identity)
+            if self._should_publish_weapon_update(weapon, entered_top5)
         ]
+
+        if not publishable_weapons and not entered_top5 and not left_top5:
+            self.db.replace_latest_builds(weapons[:5])
+            self.db.replace_current_top5(weapons[:5])
+            logger.info("No Top 5 META or build change found")
+            return
 
         if left_top5:
             logger.info("%s weapon(s) left the Top 5 META", len(left_top5))
 
         for weapon in publishable_weapons:
             try:
-                await channel.send(embed=build_weapon_embed(weapon, title_prefix="🔥 Nouvelle arme META détectée"))
+                await channel.send(
+                    content=role_mention(),
+                    embed=build_weapon_embed(weapon, title_prefix="🔥 NOUVELLE META WARZONE"),
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
                 self.db.mark_published(weapon)
-                logger.info("Published new Top 5 META weapon: %s", weapon.name)
+                self.db.mark_build_published(weapon)
+                logger.info("Published Top 5 META update: %s", weapon.name)
             except discord.DiscordException:
                 logger.exception("Unable to publish weapon %s", weapon.name)
 
+        self.db.replace_latest_builds(weapons[:5])
         self.db.replace_current_top5(weapons[:5])
 
     @check_meta_weapons.before_loop
     async def before_check_meta_weapons(self) -> None:
         await self.wait_until_ready()
+
+    def _should_publish_weapon_update(self, weapon: Weapon, entered_top5: set[str]) -> bool:
+        is_new_top5_weapon = weapon.identity in entered_top5 and not self.db.was_published(weapon.identity)
+        previous_build_signature = self.db.get_latest_build_signature(weapon.identity)
+        build_changed = (
+            previous_build_signature is not None
+            and previous_build_signature != weapon.build_signature
+            and not self.db.was_build_published(weapon.build_signature)
+        )
+        return is_new_top5_weapon or build_changed
 
 
 def build_weapon_embed(weapon: Weapon, title_prefix: Optional[str] = None) -> discord.Embed:
@@ -139,19 +156,60 @@ def build_weapon_embed(weapon: Weapon, title_prefix: Optional[str] = None) -> di
         url=weapon.url,
         color=discord.Color.gold() if weapon.tier.upper() in {"META", "S", "S+"} else discord.Color.blue(),
     )
-    embed.add_field(name="Nom de l'arme", value=weapon.name, inline=False)
-    embed.add_field(name="Tier", value=weapon.tier or "Inconnu", inline=True)
-    embed.add_field(name="Type", value=weapon.weapon_type or "Inconnu", inline=True)
-    embed.add_field(name="Lien WZStats", value=f"[Voir la page]({weapon.url})", inline=False)
-
-    if weapon.attachments:
-        embed.add_field(name="Accessoires", value="\n".join(weapon.attachments[:10]), inline=False)
+    embed.description = "━━━━━━━━━━━━━━━━━━━━━━"
+    embed.add_field(name="🔫 Arme :", value=weapon.name, inline=False)
+    embed.add_field(name="⭐ Tier :", value=weapon.tier or "Inconnu", inline=True)
+    embed.add_field(name="📂 Type :", value=weapon.weapon_type or "Inconnu", inline=True)
+    embed.add_field(name="🔧 Build META", value=format_build(weapon), inline=False)
+    embed.add_field(name="📊 Source :", value=weapon.url or settings.wzstats_url, inline=False)
 
     if weapon.image_url:
         embed.set_image(url=weapon.image_url)
 
-    embed.set_footer(text="Source : WZStats")
+    embed.set_footer(text="━━━━━━━━━━━━━━━━━━━━━━")
     return embed
+
+
+def role_mention() -> str | None:
+    if not settings.role_id:
+        logger.warning("ROLE_ID is not configured; sending META embed without role ping")
+        return None
+    return f"<@&{settings.role_id}>"
+
+
+def format_build(weapon: Weapon) -> str:
+    if not weapon.build:
+        return "Build non disponible pour le moment."
+
+    preferred_order = [
+        "Bouche",
+        "Canon",
+        "Lunette",
+        "Sous-canon",
+        "Chargeur",
+        "Poignée arrière",
+        "Poignée",
+        "Crosse",
+        "Laser",
+        "Conversion",
+        "Munitions",
+        "Accessoire",
+    ]
+    lines: list[str] = []
+    used: set[str] = set()
+
+    for label in preferred_order:
+        value = weapon.build.get(label)
+        if value:
+            lines.append(f"• {label} :\n{value}")
+            used.add(label)
+
+    for label, value in weapon.build.items():
+        if label in used:
+            continue
+        lines.append(f"• {label} :\n{value}")
+
+    return "\n\n".join(lines[:15])
 
 
 def format_weapon_line(index: int, weapon: Weapon) -> str:

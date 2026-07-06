@@ -1,4 +1,6 @@
 import logging
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -20,12 +22,22 @@ class Weapon:
     url: str
     rank: int
     attachments: list[str] = field(default_factory=list)
+    build: dict[str, str] = field(default_factory=dict)
 
     @property
     def identity(self) -> str:
         if self.url:
             return self.url.rstrip("/").casefold()
         return re.sub(r"\s+", "-", self.name.strip().casefold())
+
+    @property
+    def build_signature(self) -> str:
+        payload = {
+            "identity": self.identity,
+            "build": {key: self.build[key] for key in sorted(self.build)},
+        }
+        value = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 @dataclass(slots=True)
@@ -100,12 +112,21 @@ class WZStatsScraper:
             weapons = await self._fetch_weapons_from_html(playwright)
             if not weapons:
                 logger.warning("No weapons extracted from WZStats HTML")
+                return []
+
+            await self._enrich_weapons_with_builds(playwright, weapons)
             return weapons[: self.TOP_META_LIMIT]
 
     async def enrich_weapon(self, weapon: Weapon) -> Weapon:
         async with async_playwright() as playwright:
-            weapon.attachments = await self._fetch_attachments_from_html(playwright, weapon.url)
+            weapon.build = await self._fetch_build_from_html(playwright, weapon.url)
+            weapon.attachments = self._build_to_attachment_lines(weapon.build)
         return weapon
+
+    async def _enrich_weapons_with_builds(self, playwright: Any, weapons: list[Weapon]) -> None:
+        for weapon in weapons[: self.TOP_META_LIMIT]:
+            weapon.build = await self._fetch_build_from_html(playwright, weapon.url)
+            weapon.attachments = self._build_to_attachment_lines(weapon.build)
 
     async def _fetch_weapons_from_html(self, playwright: Any) -> list[Weapon]:
         request = await self._new_request_context(playwright)
@@ -126,18 +147,18 @@ class WZStatsScraper:
         finally:
             await request.dispose()
 
-    async def _fetch_attachments_from_html(self, playwright: Any, url: str) -> list[str]:
+    async def _fetch_build_from_html(self, playwright: Any, url: str) -> dict[str, str]:
         request = await self._new_request_context(playwright)
         try:
             response = await request.get(url, timeout=30_000)
             if not response.ok:
-                return []
+                return {}
 
             html = await response.text()
-            return self._extract_attachments_from_html(html)
+            return self._extract_build_from_html(html)
         except Exception:
             logger.info("Unable to extract weapon details from WZStats HTML")
-            return []
+            return {}
         finally:
             await request.dispose()
 
@@ -201,43 +222,109 @@ class WZStatsScraper:
 
         return self._normalize_weapons(raw_weapons)
 
-    def _extract_attachments_from_html(self, html: str) -> list[str]:
+    def _extract_build_from_html(self, html: str) -> dict[str, str]:
         parser = WZStatsHtmlParser()
         parser.feed(html)
 
+        values = [self._clean_text(token.value) for token in parser.tokens if token.kind in {"text", "link"}]
+        values = [value for value in values if value]
+        build: dict[str, str] = {}
+
+        for index, value in enumerate(values):
+            label = self._canonical_attachment_label(value)
+            if not label:
+                label, inline_value = self._split_inline_attachment(value)
+                if label and inline_value:
+                    build.setdefault(label, inline_value)
+                continue
+
+            inline_value = self._value_after_label(value)
+            if inline_value:
+                build.setdefault(label, inline_value)
+                continue
+
+            next_value = self._next_attachment_value(values, index + 1)
+            if next_value:
+                build.setdefault(label, next_value)
+
+        return build
+
+    def _build_to_attachment_lines(self, build: dict[str, str]) -> list[str]:
+        return [f"{label}: {value}" for label, value in build.items()]
+
+    def _next_attachment_value(self, values: list[str], start_index: int) -> str:
+        for value in values[start_index : start_index + 4]:
+            if self._canonical_attachment_label(value):
+                continue
+            if len(value) < 2 or len(value) > 90:
+                continue
+            if value.startswith("#"):
+                continue
+            if value.casefold() in {"meta", "warzone meta", "mise à jour", "new", "nouveau"}:
+                continue
+            return value
+        return ""
+
+    def _split_inline_attachment(self, value: str) -> tuple[str, str]:
+        match = re.match(r"^([^:：-]{3,35})\s*[:：-]\s*(.{2,90})$", value)
+        if not match:
+            return "", ""
+
+        label = self._canonical_attachment_label(match.group(1))
+        attachment = self._clean_text(match.group(2))
+        return label, attachment
+
+    def _value_after_label(self, value: str) -> str:
+        for separator in (":", "：", "-"):
+            if separator not in value:
+                continue
+            _, attachment = value.split(separator, 1)
+            attachment = self._clean_text(attachment)
+            if attachment and not self._canonical_attachment_label(attachment):
+                return attachment
+        return ""
+
+    def _canonical_attachment_label(self, value: str) -> str:
+        normalized = self._normalize_label(value)
         labels = [
-            "bouche",
-            "canon",
-            "laser",
-            "lunette",
-            "crosse",
-            "chargeur",
-            "munitions",
-            "poignée",
-            "accessoire",
-            "muzzle",
-            "barrel",
-            "optic",
-            "stock",
-            "magazine",
-            "ammunition",
-            "underbarrel",
-            "rear grip",
+            ("Bouche", ("bouche", "muzzle")),
+            ("Canon", ("canon", "barrel")),
+            ("Lunette", ("lunette", "optic", "scope", "viseur")),
+            ("Crosse", ("crosse", "stock")),
+            ("Sous-canon", ("sous canon", "sous-canon", "underbarrel")),
+            ("Chargeur", ("chargeur", "magazine", "mag")),
+            ("Poignée arrière", ("poignee arriere", "poignée arrière", "rear grip", "grip arriere")),
+            ("Poignée", ("poignee", "poignée", "grip")),
+            ("Laser", ("laser",)),
+            ("Conversion", ("conversion", "conversion kit", "accessoire de conversion")),
+            ("Munitions", ("munitions", "ammunition", "ammo")),
+            ("Accessoire", ("accessoire", "perk", "comb", "bolt", "fire mod")),
         ]
-        found: list[str] = []
 
-        for token in parser.tokens:
-            if token.kind not in {"text", "link"}:
-                continue
-            text = self._clean_text(token.value)
-            if len(text) < 3 or len(text) > 90:
-                continue
-            if not any(label in text.casefold() for label in labels):
-                continue
-            if text not in found:
-                found.append(text)
+        for label, aliases in labels:
+            if any(alias in normalized for alias in aliases):
+                return label
 
-        return found[:10]
+        return ""
+
+    def _normalize_label(self, value: str) -> str:
+        value = self._clean_text(value).casefold()
+        replacements = {
+            "é": "e",
+            "è": "e",
+            "ê": "e",
+            "à": "a",
+            "â": "a",
+            "ù": "u",
+            "û": "u",
+            "î": "i",
+            "ï": "i",
+            "ô": "o",
+            "ç": "c",
+        }
+        for source, target in replacements.items():
+            value = value.replace(source, target)
+        return value
 
     def _normalize_weapons(self, raw_weapons: list[dict[str, Any]]) -> list[Weapon]:
         weapons: list[Weapon] = []
@@ -265,6 +352,7 @@ class WZStatsScraper:
                     image_url=urljoin(self.base_url, str(item.get("imageUrl", ""))),
                     url=url,
                     rank=len(weapons) + 1,
+                    build=dict(item.get("build", {})) if isinstance(item.get("build"), dict) else {},
                 )
             )
             seen.add(identity)

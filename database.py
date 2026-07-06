@@ -25,10 +25,14 @@ class Database:
                 url TEXT NOT NULL,
                 rank INTEGER,
                 attachments TEXT NOT NULL DEFAULT '[]',
+                build TEXT NOT NULL DEFAULT '{}',
+                build_signature TEXT,
                 last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        self._ensure_column("weapons", "build", "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column("weapons", "build_signature", "TEXT")
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS published_weapons (
@@ -46,16 +50,41 @@ class Database:
             )
             """
         )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS published_builds (
+                build_signature TEXT PRIMARY KEY,
+                identity TEXT NOT NULL,
+                published_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS latest_builds (
+                identity TEXT PRIMARY KEY,
+                build_signature TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         self.connection.commit()
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        rows = self.connection.execute(f"PRAGMA table_info({table})").fetchall()
+        if any(row["name"] == column for row in rows):
+            return
+        self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def upsert_weapons(self, weapons: Iterable[Weapon]) -> None:
         with self.connection:
             self.connection.executemany(
                 """
                 INSERT INTO weapons (
-                    identity, name, tier, weapon_type, image_url, url, rank, attachments, last_seen_at
+                    identity, name, tier, weapon_type, image_url, url, rank, attachments,
+                    build, build_signature, last_seen_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(identity) DO UPDATE SET
                     name = excluded.name,
                     tier = excluded.tier,
@@ -64,6 +93,8 @@ class Database:
                     url = excluded.url,
                     rank = excluded.rank,
                     attachments = excluded.attachments,
+                    build = excluded.build,
+                    build_signature = excluded.build_signature,
                     last_seen_at = CURRENT_TIMESTAMP
                 """,
                 [
@@ -76,6 +107,8 @@ class Database:
                         weapon.url,
                         weapon.rank,
                         json.dumps(weapon.attachments, ensure_ascii=False),
+                        json.dumps(weapon.build, ensure_ascii=False),
+                        weapon.build_signature,
                     )
                     for weapon in weapons
                 ],
@@ -96,6 +129,48 @@ class Database:
                 VALUES (?, CURRENT_TIMESTAMP)
                 """,
                 (weapon.identity,),
+            )
+
+    def was_build_published(self, build_signature: str) -> bool:
+        cursor = self.connection.execute(
+            "SELECT 1 FROM published_builds WHERE build_signature = ? LIMIT 1",
+            (build_signature,),
+        )
+        return cursor.fetchone() is not None
+
+    def mark_build_published(self, weapon: Weapon) -> None:
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT OR IGNORE INTO published_builds (build_signature, identity, published_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                """,
+                (weapon.build_signature, weapon.identity),
+            )
+
+    def get_latest_build_signature(self, identity: str) -> str | None:
+        row = self.connection.execute(
+            """
+            SELECT build_signature
+            FROM latest_builds
+            WHERE identity = ?
+            LIMIT 1
+            """,
+            (identity,),
+        ).fetchone()
+        return row["build_signature"] if row else None
+
+    def replace_latest_builds(self, weapons: Iterable[Weapon]) -> None:
+        with self.connection:
+            self.connection.executemany(
+                """
+                INSERT INTO latest_builds (identity, build_signature, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(identity) DO UPDATE SET
+                    build_signature = excluded.build_signature,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                [(weapon.identity, weapon.build_signature) for weapon in weapons],
             )
 
     def get_current_top5_identities(self) -> list[str]:
@@ -125,7 +200,7 @@ class Database:
 
     def get_weapons(self, limit: int | None = None) -> list[Weapon]:
         query = """
-            SELECT name, tier, weapon_type, image_url, url, rank, attachments
+            SELECT name, tier, weapon_type, image_url, url, rank, attachments, build
             FROM weapons
             ORDER BY rank ASC, name ASC
         """
@@ -143,6 +218,10 @@ class Database:
                 attachments = json.loads(row["attachments"] or "[]")
             except json.JSONDecodeError:
                 attachments = []
+            try:
+                build = json.loads(row["build"] or "{}")
+            except json.JSONDecodeError:
+                build = {}
 
             weapons.append(
                 Weapon(
@@ -153,6 +232,7 @@ class Database:
                     url=row["url"],
                     rank=row["rank"] or len(weapons) + 1,
                     attachments=attachments if isinstance(attachments, list) else [],
+                    build=build if isinstance(build, dict) else {},
                 )
             )
 

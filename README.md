@@ -8,11 +8,12 @@ Toutes les 10 minutes, le bot :
 
 - interroge `https://wzstats.gg/fr` avec Playwright ;
 - recupere uniquement les 5 premieres armes META ;
+- recupere le build META complet de chaque arme ;
 - stocke le Top 5 courant dans SQLite ;
-- compare le nouveau Top 5 avec le Top 5 precedent ;
-- publie un embed uniquement pour une arme qui entre dans le Top 5 et qui n'a jamais ete publiee.
+- compare le nouveau Top 5 et les builds avec les donnees precedentes ;
+- publie un embed quand une arme entre dans le Top 5 ou quand un build change.
 
-Si une arme quitte le Top 5, l'etat SQLite est mis a jour. Le bot ne republie pas cette arme, afin de respecter la regle anti-doublon.
+Le bot enregistre les armes et les signatures de builds deja envoyees. Il ne republie jamais une arme ou un build deja publie.
 
 ## Donnees recuperees
 
@@ -22,6 +23,7 @@ Pour chaque arme du Top 5 :
 - tier ;
 - type court, par exemple `AR`, `SMG`, `SNIPER` ;
 - image ;
+- accessoires META : bouche, canon, lunette, crosse, sous-canon, chargeur, poignee, laser, conversion et autres accessoires detectes ;
 - lien WZStats.
 
 ## Commandes Discord
@@ -37,6 +39,7 @@ Variables obligatoires :
 ```env
 DISCORD_TOKEN=token_du_bot
 CHANNEL_ID=1523456954121588766
+ROLE_ID=id_du_role_call_of_duty
 ```
 
 Variables optionnelles :
@@ -50,6 +53,7 @@ LOG_LEVEL=INFO
 ```
 
 `GUILD_ID` est recommande pour synchroniser rapidement les commandes slash sur un serveur precis.
+`ROLE_ID` doit contenir l'identifiant du role Discord `Call of Duty`. Le bot envoie `<@&ROLE_ID>` avant chaque embed de nouvelle META afin que le ping fonctionne vraiment.
 
 ## Railway
 

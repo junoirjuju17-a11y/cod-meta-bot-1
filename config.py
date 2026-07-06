@@ -7,6 +7,7 @@ class Settings:
     discord_token: str
     channel_id: int
     guild_id: int | None
+    role_id: int | None
     database_path: str
     wzstats_url: str
     check_interval_minutes: int
@@ -31,6 +32,7 @@ settings = Settings(
     discord_token=_required_env("DISCORD_TOKEN"),
     channel_id=int(_required_env("CHANNEL_ID")),
     guild_id=_optional_int_env("GUILD_ID") or 1224678261154386001,
+    role_id=_optional_int_env("ROLE_ID"),
     database_path=os.getenv("DATABASE_PATH", "data/meta.sqlite3"),
     wzstats_url=os.getenv("WZSTATS_URL", "https://wzstats.gg/fr"),
     check_interval_minutes=int(os.getenv("CHECK_INTERVAL_MINUTES", "10")),
