@@ -30,6 +30,8 @@ def _optional_int_env(name: str) -> int | None:
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 if not CHANNEL_ID:
     raise RuntimeError("Missing required environment variable: CHANNEL_ID")
+if CHANNEL_ID == "1523456954121588766":
+    raise RuntimeError("CHANNEL_ID still points to the old Discord channel. Set CHANNEL_ID=1523753006422818876 on Railway.")
 
 
 settings = Settings(
