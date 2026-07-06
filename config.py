@@ -27,16 +27,12 @@ def _optional_int_env(name: str) -> int | None:
     return int(value)
 
 
-CHANNEL_ID = os.getenv("CHANNEL_ID")
-if not CHANNEL_ID:
-    raise RuntimeError("Missing required environment variable: CHANNEL_ID")
-if CHANNEL_ID == "1523456954121588766":
-    raise RuntimeError("CHANNEL_ID still points to the old Discord channel. Set CHANNEL_ID=1523753006422818876 on Railway.")
+CHANNEL_ID = 1523753006422818876
 
 
 settings = Settings(
     discord_token=_required_env("DISCORD_TOKEN"),
-    channel_id=int(os.getenv("CHANNEL_ID")),
+    channel_id=CHANNEL_ID,
     guild_id=_optional_int_env("GUILD_ID") or 1224678261154386001,
     database_path=os.getenv("DATABASE_PATH", "data/meta.sqlite3"),
     wzstats_url=os.getenv("WZSTATS_URL", "https://wzstats.gg/fr"),
