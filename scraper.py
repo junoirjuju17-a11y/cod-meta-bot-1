@@ -1,8 +1,9 @@
-import logging
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass, field
+from html import unescape
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin
@@ -100,8 +101,66 @@ class WZStatsHtmlParser(HTMLParser):
         return re.sub(r"\s+", " ", value).strip()
 
 
+@dataclass(slots=True)
+class HtmlNode:
+    tag: str
+    attrs: dict[str, str] = field(default_factory=dict)
+    children: list["HtmlNode"] = field(default_factory=list)
+    text_parts: list[str] = field(default_factory=list)
+    parent: "HtmlNode | None" = None
+
+    def own_text(self) -> str:
+        return re.sub(r"\s+", " ", " ".join(self.text_parts)).strip()
+
+    def full_text(self) -> str:
+        values = [self.own_text()]
+        values.extend(child.full_text() for child in self.children)
+        return re.sub(r"\s+", " ", " ".join(value for value in values if value)).strip()
+
+
+class WZStatsDomParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.root = HtmlNode("document")
+        self._stack: list[HtmlNode] = [self.root]
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {name.lower(): value or "" for name, value in attrs}
+        node = HtmlNode(tag=tag.lower(), attrs=values, parent=self._stack[-1])
+        self._stack[-1].children.append(node)
+
+        if tag.lower() not in {"br", "img", "input", "meta", "link"}:
+            self._stack.append(node)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        for index in range(len(self._stack) - 1, 0, -1):
+            if self._stack[index].tag == tag:
+                del self._stack[index:]
+                return
+
+    def handle_data(self, data: str) -> None:
+        text = re.sub(r"\s+", " ", data).strip()
+        if text:
+            self._stack[-1].text_parts.append(text)
+
+
 class WZStatsScraper:
     TOP_META_LIMIT = 5
+    SLOT_ALIASES = {
+        "Bouche": ("bouche", "muzzle", "muzzle attachment"),
+        "Canon": ("canon", "barrel", "barrel attachment"),
+        "Lunette": ("lunette", "optic", "scope", "viseur", "optic attachment"),
+        "Crosse": ("crosse", "stock", "stock attachment"),
+        "Sous-canon": ("sous canon", "sous-canon", "underbarrel", "under barrel", "underbarrel attachment"),
+        "Chargeur": ("chargeur", "magazine", "mag", "magazine attachment"),
+        "Poignée arrière": ("poignee arriere", "poignée arrière", "rear grip", "grip arriere", "rear grip attachment"),
+        "Poignée": ("poignee", "poignée", "grip", "grip attachment"),
+        "Laser": ("laser", "laser attachment"),
+        "Conversion": ("conversion", "conversion kit", "accessoire de conversion"),
+        "Munitions": ("munitions", "ammunition", "ammo", "ammunition attachment"),
+        "Accessoire": ("accessoire", "perk", "comb", "bolt", "fire mod", "mod"),
+    }
 
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url
@@ -223,34 +282,262 @@ class WZStatsScraper:
         return self._normalize_weapons(raw_weapons)
 
     def _extract_build_from_html(self, html: str) -> dict[str, str]:
-        parser = WZStatsHtmlParser()
-        parser.feed(html)
+        build = self._extract_build_from_json_scripts(html)
+        if build:
+            return build
 
-        values = [self._clean_text(token.value) for token in parser.tokens if token.kind in {"text", "link"}]
-        values = [value for value in values if value]
+        return self._extract_build_from_text_tokens(html)
+
+    def _extract_build_from_json_scripts(self, html: str) -> dict[str, str]:
+        scripts = re.findall(
+            r"<script[^>]+(?:id=[\"']__NEXT_DATA__[\"']|type=[\"']application/json[\"'])[^>]*>(.*?)</script>",
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
         build: dict[str, str] = {}
 
-        for index, value in enumerate(values):
-            label = self._canonical_attachment_label(value)
-            if not label:
-                label, inline_value = self._split_inline_attachment(value)
-                if label and inline_value:
-                    build.setdefault(label, self._format_attachment_value(inline_value, ""))
+        for script in scripts:
+            try:
+                payload = json.loads(unescape(script))
+            except json.JSONDecodeError:
                 continue
 
-            inline_value = self._value_after_label(value)
-            inline_level = ""
-            if inline_value:
-                name, inline_level = self._split_attachment_name_and_level(inline_value)
-                if name:
-                    build.setdefault(label, self._format_attachment_value(name, inline_level))
-                    continue
+            self._collect_build_from_json(payload, build)
+            if build:
+                logger.debug("WZStats build extracted from JSON: %s", build)
+                return build
 
-            attachment_name, level = self._next_attachment_name_and_level(values, index + 1)
-            if attachment_name:
-                build.setdefault(label, self._format_attachment_value(attachment_name, inline_level or level))
+        return {}
+
+    def _collect_build_from_json(self, node: Any, build: dict[str, str], parent_slot: str = "") -> None:
+        if isinstance(node, list):
+            for item in node:
+                self._collect_build_from_json(item, build)
+            return
+
+        if not isinstance(node, dict):
+            return
+
+        slot = self._slot_from_json_node(node)
+        name = self._attachment_name_from_json_node(node)
+        level = self._attachment_level_from_json_node(node)
+
+        if slot:
+            logger.debug("Raw WZStats attachment JSON for %s: %s", slot, self._compact_json_context(node))
+            if name:
+                self._store_attachment(build, slot, name, level)
+            elif level:
+                self._store_attachment(build, slot, "Nom introuvable", level)
+
+        for key, value in node.items():
+            nested_slot = self._canonical_attachment_label(str(key))
+            if nested_slot and isinstance(value, str):
+                logger.debug("Raw WZStats attachment JSON value for %s: %s", nested_slot, value)
+                name, level = self._split_attachment_name_and_level(value)
+                if self._is_valid_attachment_name(name):
+                    self._store_attachment(build, nested_slot, name, level)
+                elif level:
+                    self._store_attachment(build, nested_slot, "Nom introuvable", level)
+                continue
+
+            self._collect_build_from_json(value, build)
+
+    def _slot_from_json_node(self, node: dict[str, Any]) -> str:
+        for key in ("type", "slot", "category", "attachmentType", "attachment_type", "key"):
+            value = node.get(key)
+            if isinstance(value, str):
+                slot = self._canonical_attachment_label(value)
+                if slot:
+                    return slot
+        return ""
+
+    def _attachment_name_from_json_node(self, node: dict[str, Any]) -> str:
+        for key in ("name", "title", "label", "attachmentName", "attachment_name", "displayName"):
+            value = node.get(key)
+            if not isinstance(value, str):
+                continue
+            name, _ = self._split_attachment_name_and_level(value)
+            if self._is_valid_attachment_name(name):
+                return name
+        return ""
+
+    def _attachment_level_from_json_node(self, node: dict[str, Any]) -> str:
+        for key in ("level", "unlockLevel", "unlock_level", "requiredLevel", "required_level"):
+            value = node.get(key)
+            if isinstance(value, int):
+                return f"Niveau {value}"
+            if isinstance(value, str):
+                _, level = self._split_attachment_name_and_level(value)
+                if level:
+                    return level
+                if value.strip().isdigit():
+                    return f"Niveau {value.strip()}"
+        return ""
+
+    def _compact_json_context(self, node: dict[str, Any]) -> str:
+        try:
+            value = json.dumps(node, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            value = str(node)
+        return value[:1000]
+
+    def _extract_build_from_text_tokens(self, html: str) -> dict[str, str]:
+        parser = WZStatsDomParser()
+        parser.feed(html)
+
+        build: dict[str, str] = {}
+        candidates = self._attachment_block_candidates(parser.root)
+        candidates.sort(key=lambda item: item[0])
+
+        for _, label, value, level, raw_text in candidates:
+            if label in build:
+                continue
+            logger.debug("WZStats attachment DOM block raw: %s", raw_text)
+            self._store_attachment(build, label, value or "Nom introuvable", level)
 
         return build
+
+    def _attachment_block_candidates(self, root: HtmlNode) -> list[tuple[int, str, str, str, str]]:
+        candidates: list[tuple[int, str, str, str, str]] = []
+
+        for node in self._walk_nodes(root):
+            raw_text = node.full_text()
+            if not raw_text:
+                continue
+
+            labels = self._labels_in_node(node)
+            if len(labels) != 1:
+                continue
+
+            label = labels[0]
+            value, level = self._attachment_value_from_node(node, label)
+            if not value and not level:
+                continue
+
+            score = self._attachment_node_score(node, label, value)
+            candidates.append((score, label, value, level, raw_text[:500]))
+
+        return candidates
+
+    def _labels_in_node(self, node: HtmlNode) -> list[str]:
+        labels: set[str] = set()
+
+        for text in self._node_text_units(node):
+            label = self._canonical_attachment_label(text)
+            if label:
+                labels.add(label)
+                continue
+
+            labels.update(self._labels_in_text(text))
+
+        return list(labels)
+
+    def _walk_nodes(self, node: HtmlNode) -> list[HtmlNode]:
+        nodes = [node]
+        for child in node.children:
+            nodes.extend(self._walk_nodes(child))
+        return nodes
+
+    def _labels_in_text(self, value: str) -> list[str]:
+        words = set()
+        for part in re.split(r"[\n\r|/]+", value):
+            clean_part = self._clean_text(part)
+            label = self._canonical_attachment_label(clean_part)
+            if label:
+                words.add(label)
+                continue
+
+            inline_match = re.match(r"^([^:：-]{3,35})\s*[:：-]\s*.+$", clean_part)
+            if inline_match:
+                label = self._canonical_attachment_label(inline_match.group(1))
+                if label:
+                    words.add(label)
+
+        normalized = self._normalize_label(value)
+        for label, aliases in self.SLOT_ALIASES.items():
+            if any(re.search(rf"(^|\s){re.escape(alias)}\s*:", normalized) for alias in aliases):
+                words.add(label)
+
+        return list(words)
+
+    def _attachment_value_from_node(self, node: HtmlNode, label: str) -> tuple[str, str]:
+        texts = self._sibling_value_texts_for_label(node, label) or self._node_text_units(node)
+        raw_text = node.full_text()
+
+        inline_value = self._value_after_label(raw_text)
+        if inline_value:
+            name, level = self._split_attachment_name_and_level(inline_value)
+            if self._is_valid_attachment_name(name):
+                return name, level
+
+        level = ""
+        best_name = ""
+
+        for text in texts:
+            if self._canonical_attachment_label(text):
+                continue
+
+            candidate_text = self._strip_label_from_text(text, label)
+            name, possible_level = self._split_attachment_name_and_level(candidate_text)
+            if possible_level and not level:
+                level = possible_level
+            if self._is_valid_attachment_name(name):
+                best_name = name
+                break
+
+        return best_name, level
+
+    def _sibling_value_texts_for_label(self, node: HtmlNode, label: str) -> list[str]:
+        values: list[str] = []
+        label_seen = False
+
+        for child in node.children:
+            text = child.full_text()
+            if not text:
+                continue
+            if self._canonical_attachment_label(text) == label:
+                label_seen = True
+                continue
+            if label_seen:
+                values.append(text)
+
+        return values
+
+    def _strip_label_from_text(self, value: str, label: str) -> str:
+        value = self._clean_text(value)
+        aliases = self.SLOT_ALIASES.get(label, ())
+        for alias in aliases:
+            flexible_alias = re.escape(alias).replace(r"\ ", r"[\s-]+").replace(r"\-", r"[\s-]+")
+            pattern = rf"^\s*{flexible_alias}\s*[:：-]?\s*"
+            stripped = re.sub(pattern, "", value, flags=re.IGNORECASE)
+            if stripped != value:
+                return self._clean_text(stripped)
+        return value
+
+    def _node_text_units(self, node: HtmlNode) -> list[str]:
+        values: list[str] = []
+        own = node.own_text()
+        if own:
+            values.append(own)
+        for child in node.children:
+            values.extend(self._node_text_units(child))
+        return values
+
+    def _attachment_node_score(self, node: HtmlNode, label: str, value: str) -> int:
+        text_count = len(self._node_text_units(node))
+        score = len(node.full_text()) + text_count * 15
+        if node.own_text() and self._canonical_attachment_label(node.own_text()) == label:
+            score -= 40
+        if value:
+            score -= 20
+        return score
+
+    def _store_attachment(self, build: dict[str, str], label: str, name: str, level: str) -> None:
+        value = self._format_attachment_value(name, level)
+        if not value:
+            return
+        build.setdefault(label, value)
+        logger.debug("WZStats attachment extracted: %s -> %s", label, value)
 
     def _build_to_attachment_lines(self, build: dict[str, str]) -> list[str]:
         return [f"{label}: {value}" for label, value in build.items()]
@@ -259,21 +546,15 @@ class WZStatsScraper:
         attachment_name = ""
         level = ""
 
-        for offset, value in enumerate(values[start_index : start_index + 6]):
+        for offset, value in enumerate(values[start_index : start_index + 8]):
             if self._canonical_attachment_label(value):
                 continue
-            name_part, level_part = self._split_attachment_name_and_level(value)
 
+            name_part, level_part = self._split_attachment_name_and_level(value)
             if level_part and not level:
                 level = level_part
 
-            if not name_part:
-                continue
-            if len(name_part) < 2 or len(name_part) > 90:
-                continue
-            if name_part.startswith("#"):
-                continue
-            if name_part.casefold() in {"meta", "warzone meta", "mise à jour", "new", "nouveau"}:
+            if not self._is_valid_attachment_name(name_part):
                 continue
 
             attachment_name = name_part
@@ -286,16 +567,23 @@ class WZStatsScraper:
         return attachment_name, level
 
     def _split_inline_attachment(self, value: str) -> tuple[str, str]:
-        match = re.match(r"^([^:：-]{3,35})\s*[:：-]\s*(.{2,90})$", value)
+        match = re.match(r"^([^:：]{3,35})\s*[:：]\s*(.{2,120})$", value)
         if not match:
             return "", ""
 
         label = self._canonical_attachment_label(match.group(1))
+        if not label:
+            return "", ""
+
         name, level = self._split_attachment_name_and_level(match.group(2))
-        return label, self._format_attachment_value(name, level) if name else ""
+        if self._is_valid_attachment_name(name):
+            return label, self._format_attachment_value(name, level)
+        if level:
+            return label, self._format_attachment_value("Nom introuvable", level)
+        return "", ""
 
     def _value_after_label(self, value: str) -> str:
-        for separator in (":", "：", "-"):
+        for separator in (":", "："):
             if separator not in value:
                 continue
             _, attachment = value.split(separator, 1)
@@ -344,40 +632,48 @@ class WZStatsScraper:
 
         return name
 
+    def _is_valid_attachment_name(self, value: str) -> bool:
+        value = self._clean_text(value)
+        if not value:
+            return False
+        if len(value) < 2 or len(value) > 90:
+            return False
+        if value.startswith("#"):
+            return False
+        if self._is_level_only(value):
+            return False
+        if self._canonical_attachment_label(value):
+            return False
+        if value.casefold() in {"meta", "warzone meta", "mise à jour", "new", "nouveau", "code", "unknown"}:
+            return False
+        return True
+
     def _is_level_only(self, value: str) -> bool:
-        return bool(re.fullmatch(r"\(?\s*(Niveau|Level|Lvl|Lv\.?)\s*\d+\s*\)?", self._clean_text(value), flags=re.IGNORECASE))
+        return bool(
+            re.fullmatch(
+                r"\(?\s*(Niveau|Level|Lvl|Lv\.?)\s*\d+\s*\)?",
+                self._clean_text(value),
+                flags=re.IGNORECASE,
+            )
+        )
 
     def _normalize_level(self, value: str) -> str:
         match = re.search(r"\d+", value)
         return f"Niveau {match.group(0)}" if match else ""
 
     def _canonical_attachment_label(self, value: str) -> str:
-        normalized = self._normalize_label(value)
-        labels = [
-            ("Bouche", ("bouche", "muzzle")),
-            ("Canon", ("canon", "barrel")),
-            ("Lunette", ("lunette", "optic", "scope", "viseur")),
-            ("Crosse", ("crosse", "stock")),
-            ("Sous-canon", ("sous canon", "sous-canon", "underbarrel")),
-            ("Chargeur", ("chargeur", "magazine", "mag")),
-            ("Poignée arrière", ("poignee arriere", "poignée arrière", "rear grip", "grip arriere")),
-            ("Poignée", ("poignee", "poignée", "grip")),
-            ("Laser", ("laser",)),
-            ("Conversion", ("conversion", "conversion kit", "accessoire de conversion")),
-            ("Munitions", ("munitions", "ammunition", "ammo")),
-            ("Accessoire", ("accessoire", "perk", "comb", "bolt", "fire mod")),
-        ]
+        normalized = self._normalize_label(value).strip(" :：-")
 
-        normalized = normalized.strip(" :：-")
-
-        for label, aliases in labels:
+        for label, aliases in self.SLOT_ALIASES.items():
             if any(normalized == alias for alias in aliases):
                 return label
 
         return ""
 
     def _normalize_label(self, value: str) -> str:
-        value = self._clean_text(value).casefold()
+        value = self._clean_text(value)
+        value = re.sub(r"([a-z])([A-Z])", r"\1 \2", value).casefold()
+        value = value.replace("_", " ").replace("-", " ")
         replacements = {
             "é": "e",
             "è": "e",
@@ -393,7 +689,7 @@ class WZStatsScraper:
         }
         for source, target in replacements.items():
             value = value.replace(source, target)
-        return value
+        return re.sub(r"\s+", " ", value).strip()
 
     def _normalize_weapons(self, raw_weapons: list[dict[str, Any]]) -> list[Weapon]:
         weapons: list[Weapon] = []
