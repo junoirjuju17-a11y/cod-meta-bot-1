@@ -39,7 +39,7 @@ Variables obligatoires :
 
 ```env
 DISCORD_TOKEN=token_du_bot
-CHANNEL_ID=1523456954121588766
+CHANNEL_ID=1523753006422818876
 ```
 
 Variables optionnelles :
