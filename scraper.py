@@ -261,7 +261,7 @@ class WZStatsScraper:
             if not url or identity in seen_links:
                 continue
 
-            window = parser.tokens[index + 1 : index + 20]
+            window = parser.tokens[index + 1 : index + 35]
             text_values = [item.value for item in window if item.kind in {"text", "link"}]
             image = next((item for item in window if item.kind == "image" and (item.src or item.alt)), None)
             displayed_name = self._best_name_from_html_window(name, text_values, image.alt if image else "")
@@ -796,18 +796,20 @@ class WZStatsScraper:
         return ""
 
     def _find_range_role(self, value: str) -> str:
-        normalized = value.casefold()
+        normalized = self._normalize_range_text(value)
 
-        if "sniper support" in normalized or "support sniper" in normalized:
-            return "Courte / moyenne portée"
-        if "longue portée" in normalized or "long range" in normalized:
-            return "Longue portée"
-        if "courte portée" in normalized or "short range" in normalized or "close range" in normalized:
-            return "Courte portée"
-        if "moyenne portée" in normalized or "medium range" in normalized or "mid range" in normalized:
-            return "Moyenne portée"
-        if "polyvalent" in normalized or "versatile" in normalized:
-            return "Polyvalente"
+        wzstats_patterns = [
+            (r"\bsniper\s+support\b|\bsupport\s+sniper\b", "Courte portée"),
+            (r"\bclose\s+range\b|\bshort\s+range\b|\bcqc\b|\bcq\b|\bcourte\s+portee\b", "Courte portée"),
+            (r"\blong\s+range\b|\blongue\s+portee\b", "Longue portée"),
+            (r"\bmedium\s+range\b|\bmid\s+range\b|\bmoyenne\s+portee\b", "Moyenne portée"),
+            (r"\bsupport\b", "Moyenne portée"),
+            (r"\bbalanced\b|\bflex\b|\bversatile\b|\bpolyvalente?\b", "Polyvalente"),
+        ]
+
+        for pattern, range_role in wzstats_patterns:
+            if re.search(pattern, normalized):
+                return range_role
 
         return ""
 
@@ -825,6 +827,11 @@ class WZStatsScraper:
             return "Moyenne / longue portée"
 
         return "Polyvalente"
+
+    def _normalize_range_text(self, value: str) -> str:
+        value = self._normalize_label(value)
+        value = value.replace("/", " ").replace("_", " ").replace("-", " ")
+        return re.sub(r"\s+", " ", value).strip()
 
     def _name_from_slug(self, value: str) -> str:
         slug = self._clean_text(value).strip("/").split("/")[-1]
