@@ -147,7 +147,7 @@ class WZStatsDomParser(HTMLParser):
 
 
 class WZStatsScraper:
-    TOP_META_LIMIT = 5
+    SELECTED_RANGE_ROLES = ("Longue portée", "Courte portée")
     SLOT_ALIASES = {
         "Bouche": ("bouche", "muzzle", "muzzle attachment"),
         "Canon": ("canon", "barrel", "barrel attachment"),
@@ -174,8 +174,9 @@ class WZStatsScraper:
                 logger.warning("No weapons extracted from WZStats HTML")
                 return []
 
-            await self._enrich_weapons_with_builds(playwright, weapons)
-            return weapons[: self.TOP_META_LIMIT]
+            selected_weapons = self._select_best_range_weapons(weapons)
+            await self._enrich_weapons_with_builds(playwright, selected_weapons)
+            return selected_weapons
 
     async def enrich_weapon(self, weapon: Weapon) -> Weapon:
         async with async_playwright() as playwright:
@@ -184,7 +185,7 @@ class WZStatsScraper:
         return weapon
 
     async def _enrich_weapons_with_builds(self, playwright: Any, weapons: list[Weapon]) -> None:
-        for weapon in weapons[: self.TOP_META_LIMIT]:
+        for weapon in weapons:
             weapon.build = await self._fetch_build_from_html(playwright, weapon.url)
             weapon.attachments = self._build_to_attachment_lines(weapon.build)
 
@@ -200,7 +201,7 @@ class WZStatsScraper:
             weapons = self._extract_weapons_from_html(html)
             if weapons:
                 logger.info("Extracted %s weapons from WZStats HTML", len(weapons))
-            return weapons[: self.TOP_META_LIMIT]
+            return weapons
         except Exception:
             logger.info("Unable to extract WZStats HTML with Playwright request")
             return []
@@ -284,10 +285,66 @@ class WZStatsScraper:
             )
             seen_links.add(identity)
 
-            if len(raw_weapons) >= self.TOP_META_LIMIT:
-                break
-
         return self._normalize_weapons(raw_weapons)
+
+    def _select_best_range_weapons(self, weapons: list[Weapon]) -> list[Weapon]:
+        selected: list[Weapon] = []
+        used_identities: set[str] = set()
+
+        for range_role in self.SELECTED_RANGE_ROLES:
+            weapon = next(
+                (
+                    item
+                    for item in weapons
+                    if item.range_role == range_role and item.identity not in used_identities
+                ),
+                None,
+            )
+
+            if weapon is None:
+                weapon = self._fallback_weapon_for_range(weapons, range_role, used_identities)
+
+            if weapon is None:
+                logger.warning("Unable to select a %s META weapon from WZStats", range_role)
+                continue
+
+            weapon.range_role = range_role
+            selected.append(weapon)
+            used_identities.add(weapon.identity)
+            logger.debug(
+                "Selected WZStats META weapon: range=%s | rank=%s | weapon=%s | type=%s",
+                range_role,
+                weapon.rank,
+                weapon.name,
+                weapon.weapon_type,
+            )
+
+        return selected
+
+    def _fallback_weapon_for_range(
+        self,
+        weapons: list[Weapon],
+        range_role: str,
+        used_identities: set[str],
+    ) -> Weapon | None:
+        if range_role == "Longue portée":
+            preferred_types = {"SNIPER", "MARKSMAN", "LMG"}
+        elif range_role == "Courte portée":
+            preferred_types = {"SMG", "SHOTGUN", "PISTOL"}
+        else:
+            preferred_types = set()
+
+        for weapon in weapons:
+            if weapon.identity in used_identities:
+                continue
+            if weapon.weapon_type.upper() in preferred_types:
+                return weapon
+
+        for weapon in weapons:
+            if weapon.identity not in used_identities:
+                return weapon
+
+        return None
 
     def _extract_build_from_html(self, html: str) -> dict[str, str]:
         build = self._extract_build_from_json_scripts(html)

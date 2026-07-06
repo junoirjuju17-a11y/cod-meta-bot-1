@@ -1,23 +1,24 @@
 # COD META Bot
 
-Bot Discord Python qui surveille le Top 5 META Warzone affiche sur [WZStats](https://wzstats.gg/fr) et publie les nouvelles entrees dans un salon Discord.
+Bot Discord Python qui surveille les meilleures META Warzone affichees sur [WZStats](https://wzstats.gg/fr) et publie les changements dans un salon Discord.
 
 ## Fonctionnement
 
 Toutes les 10 minutes, le bot :
 
 - interroge `https://wzstats.gg/fr` avec Playwright ;
-- recupere uniquement les 5 premieres armes META ;
-- recupere le build META complet de chaque arme ;
-- stocke le Top 5 courant dans SQLite ;
-- compare le nouveau Top 5 et les builds avec les donnees precedentes ;
-- publie un embed quand une arme entre dans le Top 5 ou quand un build change.
+- recupere toutes les armes META disponibles ;
+- selectionne uniquement la meilleure arme `Longue portée` et la meilleure arme `Courte portée` ;
+- recupere le build META complet de ces deux armes ;
+- stocke la selection courante dans SQLite ;
+- compare les deux armes et leurs builds avec les donnees precedentes ;
+- publie un embed quand la meilleure arme d'une portee change ou quand son build change.
 
 Le bot enregistre les armes et les signatures de builds deja envoyees. Il ne republie jamais une arme ou un build deja publie.
 
 ## Donnees recuperees
 
-Pour chaque arme du Top 5 :
+Pour chaque arme selectionnee :
 
 - nom ;
 - tier ;
@@ -28,9 +29,9 @@ Pour chaque arme du Top 5 :
 
 ## Commandes Discord
 
-- `/meta` : affiche le Top 5 META actuel.
-- `/top5` : affiche le Top 5 WZStats.
-- `/arme <nom>` : affiche les details connus d'une arme du Top 5.
+- `/meta` : affiche la selection META actuelle.
+- `/top5` : affiche la selection META actuelle.
+- `/arme <nom>` : affiche les details connus d'une arme selectionnee.
 
 ## Variables d'environnement
 

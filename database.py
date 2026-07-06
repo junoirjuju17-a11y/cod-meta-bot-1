@@ -54,6 +54,15 @@ class Database:
         )
         self.connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS current_meta_picks (
+                range_role TEXT PRIMARY KEY,
+                identity TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        self.connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS published_builds (
                 build_signature TEXT PRIMARY KEY,
                 identity TEXT NOT NULL,
@@ -200,6 +209,27 @@ class Database:
                     (index, weapon.identity)
                     for index, weapon in enumerate(weapon_list[:5], start=1)
                 ],
+            )
+
+    def get_current_meta_picks(self) -> dict[str, str]:
+        rows = self.connection.execute(
+            """
+            SELECT range_role, identity
+            FROM current_meta_picks
+            """
+        ).fetchall()
+        return {row["range_role"]: row["identity"] for row in rows}
+
+    def replace_current_meta_picks(self, weapons: Iterable[Weapon]) -> None:
+        weapon_list = list(weapons)
+        with self.connection:
+            self.connection.execute("DELETE FROM current_meta_picks")
+            self.connection.executemany(
+                """
+                INSERT INTO current_meta_picks (range_role, identity, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                """,
+                [(weapon.range_role, weapon.identity) for weapon in weapon_list],
             )
 
     def get_weapons(self, limit: int | None = None) -> list[Weapon]:
