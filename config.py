@@ -11,7 +11,6 @@ class Settings:
     wzstats_url: str
     check_interval_minutes: int
     log_level: str
-    enable_browser_fallback: bool
 
 
 def _required_env(name: str) -> str:
@@ -28,13 +27,6 @@ def _optional_int_env(name: str) -> int | None:
     return int(value)
 
 
-def _bool_env(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().casefold() in {"1", "true", "yes", "y", "on"}
-
-
 settings = Settings(
     discord_token=_required_env("DISCORD_TOKEN"),
     channel_id=int(_required_env("CHANNEL_ID")),
@@ -43,5 +35,4 @@ settings = Settings(
     wzstats_url=os.getenv("WZSTATS_URL", "https://wzstats.gg/fr"),
     check_interval_minutes=int(os.getenv("CHECK_INTERVAL_MINUTES", "10")),
     log_level=os.getenv("LOG_LEVEL", "INFO"),
-    enable_browser_fallback=_bool_env("ENABLE_BROWSER_FALLBACK", False),
 )

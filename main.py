@@ -25,10 +25,7 @@ class CodMetaBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.db = Database(settings.database_path)
-        self.scraper = WZStatsScraper(
-            settings.wzstats_url,
-            enable_browser_fallback=settings.enable_browser_fallback,
-        )
+        self.scraper = WZStatsScraper(settings.wzstats_url)
         self._latest_weapons: list[Weapon] = []
         self._startup_complete = asyncio.Event()
 
@@ -66,11 +63,18 @@ class CodMetaBot(discord.Client):
             logger.warning("Unable to refresh WZStats data; using cache when available")
             if self._latest_weapons:
                 return self._latest_weapons
-            return self.db.get_weapons()
+            return self.db.get_weapons(limit=5)
 
-        self._latest_weapons = weapons
-        self.db.upsert_weapons(weapons)
-        return weapons
+        if not weapons:
+            logger.warning("WZStats returned no Top 5 weapons; using cache when available")
+            if self._latest_weapons:
+                return self._latest_weapons
+            return self.db.get_weapons(limit=5)
+
+        top5_weapons = weapons[:5]
+        self._latest_weapons = top5_weapons
+        self.db.upsert_weapons(top5_weapons)
+        return top5_weapons
 
     @tasks.loop(minutes=settings.check_interval_minutes)
     async def check_meta_weapons(self) -> None:
@@ -94,18 +98,34 @@ class CodMetaBot(discord.Client):
             logger.exception("WZStats check failed; bot will retry on the next cycle")
             return
 
-        new_weapons = [weapon for weapon in weapons if not self.db.was_published(weapon.identity)]
-        if not new_weapons:
-            logger.info("No new META weapons found")
+        previous_top5 = set(self.db.get_current_top5_identities())
+        current_top5 = {weapon.identity for weapon in weapons[:5]}
+        entered_top5 = current_top5 - previous_top5
+        left_top5 = previous_top5 - current_top5
+
+        if not entered_top5 and not left_top5:
+            self.db.replace_current_top5(weapons[:5])
+            logger.info("No Top 5 META change found")
             return
 
-        for weapon in new_weapons:
+        publishable_weapons = [
+            weapon
+            for weapon in weapons[:5]
+            if weapon.identity in entered_top5 and not self.db.was_published(weapon.identity)
+        ]
+
+        if left_top5:
+            logger.info("%s weapon(s) left the Top 5 META", len(left_top5))
+
+        for weapon in publishable_weapons:
             try:
-                await channel.send(embed=build_weapon_embed(weapon, title_prefix="Nouvelle arme META"))
+                await channel.send(embed=build_weapon_embed(weapon, title_prefix="🔥 Nouvelle arme META détectée"))
                 self.db.mark_published(weapon)
-                logger.info("Published new META weapon: %s", weapon.name)
+                logger.info("Published new Top 5 META weapon: %s", weapon.name)
             except discord.DiscordException:
                 logger.exception("Unable to publish weapon %s", weapon.name)
+
+        self.db.replace_current_top5(weapons[:5])
 
     @check_meta_weapons.before_loop
     async def before_check_meta_weapons(self) -> None:
@@ -113,15 +133,16 @@ class CodMetaBot(discord.Client):
 
 
 def build_weapon_embed(weapon: Weapon, title_prefix: Optional[str] = None) -> discord.Embed:
-    title = f"{title_prefix} : {weapon.name}" if title_prefix else weapon.name
+    title = title_prefix or weapon.name
     embed = discord.Embed(
         title=title,
         url=weapon.url,
-        color=discord.Color.gold() if weapon.tier.upper() in {"S", "S+"} else discord.Color.blue(),
+        color=discord.Color.gold() if weapon.tier.upper() in {"META", "S", "S+"} else discord.Color.blue(),
     )
+    embed.add_field(name="Nom de l'arme", value=weapon.name, inline=False)
     embed.add_field(name="Tier", value=weapon.tier or "Inconnu", inline=True)
     embed.add_field(name="Type", value=weapon.weapon_type or "Inconnu", inline=True)
-    embed.add_field(name="WZStats", value=f"[Voir la page]({weapon.url})", inline=False)
+    embed.add_field(name="Lien WZStats", value=f"[Voir la page]({weapon.url})", inline=False)
 
     if weapon.attachments:
         embed.add_field(name="Accessoires", value="\n".join(weapon.attachments[:10]), inline=False)
@@ -138,7 +159,7 @@ def format_weapon_line(index: int, weapon: Weapon) -> str:
 
 
 def register_commands(bot: CodMetaBot) -> None:
-    @bot.tree.command(name="meta", description="Affiche la liste actuelle des armes META.")
+    @bot.tree.command(name="meta", description="Affiche les 5 armes META les plus fortes.")
     async def meta(interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True)
         weapons = await bot.fetch_current_weapons(force_refresh=True)
@@ -147,21 +168,21 @@ def register_commands(bot: CodMetaBot) -> None:
             return
 
         lines = [format_weapon_line(index, weapon) for index, weapon in enumerate(weapons, start=1)]
-        embed = discord.Embed(title="Armes META actuelles", description="\n".join(lines[:25]))
+        embed = discord.Embed(title="Top 5 META WZStats", description="\n".join(lines[:5]))
         embed.set_footer(text="Source : WZStats")
         await interaction.followup.send(embed=embed)
 
-    @bot.tree.command(name="top10", description="Affiche les 10 meilleures armes META.")
-    async def top10(interaction: discord.Interaction) -> None:
+    @bot.tree.command(name="top5", description="Affiche les 5 meilleures armes META.")
+    async def top5(interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True)
         weapons = await bot.fetch_current_weapons(force_refresh=True)
-        top_weapons = weapons[:10]
+        top_weapons = weapons[:5]
         if not top_weapons:
             await interaction.followup.send("WZStats est momentanément inaccessible et aucun cache local n'est encore disponible.")
             return
 
         lines = [format_weapon_line(index, weapon) for index, weapon in enumerate(top_weapons, start=1)]
-        embed = discord.Embed(title="Top 10 WZStats", description="\n".join(lines))
+        embed = discord.Embed(title="Top 5 WZStats", description="\n".join(lines))
         embed.set_footer(text="Source : WZStats")
         await interaction.followup.send(embed=embed)
 

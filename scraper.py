@@ -89,9 +89,10 @@ class WZStatsHtmlParser(HTMLParser):
 
 
 class WZStatsScraper:
-    def __init__(self, base_url: str, enable_browser_fallback: bool = False) -> None:
+    TOP_META_LIMIT = 5
+
+    def __init__(self, base_url: str) -> None:
         self.base_url = base_url
-        self.enable_browser_fallback = enable_browser_fallback
         logger.info("WZStats scraper initialized in request-only Playwright mode")
 
     async def fetch_meta_weapons(self) -> list[Weapon]:
@@ -99,7 +100,7 @@ class WZStatsScraper:
             weapons = await self._fetch_weapons_from_html(playwright)
             if not weapons:
                 logger.warning("No weapons extracted from WZStats HTML")
-            return weapons
+            return weapons[: self.TOP_META_LIMIT]
 
     async def enrich_weapon(self, weapon: Weapon) -> Weapon:
         async with async_playwright() as playwright:
@@ -118,7 +119,7 @@ class WZStatsScraper:
             weapons = self._extract_weapons_from_html(html)
             if weapons:
                 logger.info("Extracted %s weapons from WZStats HTML", len(weapons))
-            return weapons
+            return weapons[: self.TOP_META_LIMIT]
         except Exception:
             logger.info("Unable to extract WZStats HTML with Playwright request")
             return []
@@ -194,6 +195,9 @@ class WZStatsScraper:
                 }
             )
             seen_links.add(identity)
+
+            if len(raw_weapons) >= self.TOP_META_LIMIT:
+                break
 
         return self._normalize_weapons(raw_weapons)
 
@@ -313,30 +317,24 @@ class WZStatsScraper:
         return fallback
 
     def _find_weapon_type(self, value: str) -> str:
-        type_words = [
-            "Fusil d'Assaut",
-            "Fusil d'assaut",
-            "Mitraillette",
-            "Fusil de précision",
-            "Fusil tactique",
-            "Fusil de combat",
-            "Fusil à pompe",
-            "Mitrailleuse",
-            "Pistolet",
-            "Marksman",
-            "Spécial",
-            "Assault Rifle",
-            "SMG",
-            "Sniper Rifle",
-            "Marksman Rifle",
-            "Battle Rifle",
-            "Shotgun",
-            "LMG",
-            "Handgun",
-            "Melee",
-        ]
         normalized = value.casefold()
-        return next((word for word in type_words if word.casefold() in normalized), "")
+        type_map = [
+            (("fusil d'assaut", "assault rifle"), "AR"),
+            (("mitraillette", "smg"), "SMG"),
+            (("fusil de précision", "sniper rifle"), "SNIPER"),
+            (("fusil tactique", "marksman rifle", "marksman"), "MARKSMAN"),
+            (("fusil de combat", "battle rifle"), "BR"),
+            (("fusil à pompe", "shotgun"), "SHOTGUN"),
+            (("mitrailleuse", "lmg"), "LMG"),
+            (("pistolet", "handgun"), "PISTOL"),
+            (("spécial", "melee"), "SPECIAL"),
+        ]
+
+        for keywords, short_name in type_map:
+            if any(keyword in normalized for keyword in keywords):
+                return short_name
+
+        return ""
 
     def _name_from_slug(self, value: str) -> str:
         slug = self._clean_text(value).strip("/").split("/")[-1]

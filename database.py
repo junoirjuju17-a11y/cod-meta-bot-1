@@ -37,6 +37,15 @@ class Database:
             )
             """
         )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS current_top5 (
+                position INTEGER PRIMARY KEY,
+                identity TEXT NOT NULL UNIQUE,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         self.connection.commit()
 
     def upsert_weapons(self, weapons: Iterable[Weapon]) -> None:
@@ -87,6 +96,31 @@ class Database:
                 VALUES (?, CURRENT_TIMESTAMP)
                 """,
                 (weapon.identity,),
+            )
+
+    def get_current_top5_identities(self) -> list[str]:
+        rows = self.connection.execute(
+            """
+            SELECT identity
+            FROM current_top5
+            ORDER BY position ASC
+            """
+        ).fetchall()
+        return [row["identity"] for row in rows]
+
+    def replace_current_top5(self, weapons: Iterable[Weapon]) -> None:
+        weapon_list = list(weapons)
+        with self.connection:
+            self.connection.execute("DELETE FROM current_top5")
+            self.connection.executemany(
+                """
+                INSERT INTO current_top5 (position, identity, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                """,
+                [
+                    (index, weapon.identity)
+                    for index, weapon in enumerate(weapon_list[:5], start=1)
+                ],
             )
 
     def get_weapons(self, limit: int | None = None) -> list[Weapon]:
