@@ -120,11 +120,7 @@ class CodMetaBot(discord.Client):
 
         for weapon in publishable_weapons:
             try:
-                await channel.send(
-                    content=role_mention(),
-                    embed=build_weapon_embed(weapon, title_prefix="🔥 NOUVELLE META WARZONE"),
-                    allowed_mentions=discord.AllowedMentions(roles=True),
-                )
+                await channel.send(embed=build_weapon_embed(weapon, title_prefix="🔥 NOUVELLE META WARZONE"))
                 self.db.mark_published(weapon)
                 self.db.mark_build_published(weapon)
                 logger.info("Published Top 5 META update: %s", weapon.name)
@@ -168,13 +164,6 @@ def build_weapon_embed(weapon: Weapon, title_prefix: Optional[str] = None) -> di
 
     embed.set_footer(text="━━━━━━━━━━━━━━━━━━━━━━")
     return embed
-
-
-def role_mention() -> str | None:
-    if not settings.role_id:
-        logger.warning("ROLE_ID is not configured; sending META embed without role ping")
-        return None
-    return f"<@&{settings.role_id}>"
 
 
 def format_build(weapon: Weapon) -> str:

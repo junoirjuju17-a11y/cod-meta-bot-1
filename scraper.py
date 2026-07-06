@@ -235,35 +235,55 @@ class WZStatsScraper:
             if not label:
                 label, inline_value = self._split_inline_attachment(value)
                 if label and inline_value:
-                    build.setdefault(label, inline_value)
+                    build.setdefault(label, self._format_attachment_value(inline_value, ""))
                 continue
 
             inline_value = self._value_after_label(value)
+            inline_level = ""
             if inline_value:
-                build.setdefault(label, inline_value)
-                continue
+                name, inline_level = self._split_attachment_name_and_level(inline_value)
+                if name:
+                    build.setdefault(label, self._format_attachment_value(name, inline_level))
+                    continue
 
-            next_value = self._next_attachment_value(values, index + 1)
-            if next_value:
-                build.setdefault(label, next_value)
+            attachment_name, level = self._next_attachment_name_and_level(values, index + 1)
+            if attachment_name:
+                build.setdefault(label, self._format_attachment_value(attachment_name, inline_level or level))
 
         return build
 
     def _build_to_attachment_lines(self, build: dict[str, str]) -> list[str]:
         return [f"{label}: {value}" for label, value in build.items()]
 
-    def _next_attachment_value(self, values: list[str], start_index: int) -> str:
-        for value in values[start_index : start_index + 4]:
+    def _next_attachment_name_and_level(self, values: list[str], start_index: int) -> tuple[str, str]:
+        attachment_name = ""
+        level = ""
+
+        for offset, value in enumerate(values[start_index : start_index + 6]):
             if self._canonical_attachment_label(value):
                 continue
-            if len(value) < 2 or len(value) > 90:
+            name_part, level_part = self._split_attachment_name_and_level(value)
+
+            if level_part and not level:
+                level = level_part
+
+            if not name_part:
                 continue
-            if value.startswith("#"):
+            if len(name_part) < 2 or len(name_part) > 90:
                 continue
-            if value.casefold() in {"meta", "warzone meta", "mise à jour", "new", "nouveau"}:
+            if name_part.startswith("#"):
                 continue
-            return value
-        return ""
+            if name_part.casefold() in {"meta", "warzone meta", "mise à jour", "new", "nouveau"}:
+                continue
+
+            attachment_name = name_part
+            if not level:
+                absolute_index = start_index + offset
+                _, next_level = self._split_attachment_name_and_level(" ".join(values[absolute_index + 1 : absolute_index + 3]))
+                level = next_level
+            break
+
+        return attachment_name, level
 
     def _split_inline_attachment(self, value: str) -> tuple[str, str]:
         match = re.match(r"^([^:：-]{3,35})\s*[:：-]\s*(.{2,90})$", value)
@@ -271,8 +291,8 @@ class WZStatsScraper:
             return "", ""
 
         label = self._canonical_attachment_label(match.group(1))
-        attachment = self._clean_text(match.group(2))
-        return label, attachment
+        name, level = self._split_attachment_name_and_level(match.group(2))
+        return label, self._format_attachment_value(name, level) if name else ""
 
     def _value_after_label(self, value: str) -> str:
         for separator in (":", "：", "-"):
@@ -283,6 +303,53 @@ class WZStatsScraper:
             if attachment and not self._canonical_attachment_label(attachment):
                 return attachment
         return ""
+
+    def _split_attachment_name_and_level(self, value: str) -> tuple[str, str]:
+        value = self._clean_text(value)
+        if not value:
+            return "", ""
+
+        level_patterns = [
+            r"\(?\s*(Niveau|Level|Lvl|Lv\.?)\s*(\d+)\s*\)?",
+            r"\(?\s*(Déblocage|Unlock(?:ed)?(?: at)?)\s*(?:au|at)?\s*(?:Niveau|Level|Lvl)?\s*(\d+)\s*\)?",
+        ]
+        level = ""
+
+        for pattern in level_patterns:
+            match = re.search(pattern, value, flags=re.IGNORECASE)
+            if not match:
+                continue
+            level = f"Niveau {match.group(2)}"
+            value = self._clean_text(value[: match.start()] + " " + value[match.end() :])
+            break
+
+        value = re.sub(r"^[•\-\u2013\u2014:：\s]+", "", value)
+        value = re.sub(r"[•\-\u2013\u2014:：\s]+$", "", value)
+        value = self._clean_text(value)
+
+        if self._is_level_only(value):
+            return "", level or self._normalize_level(value)
+
+        return value, level
+
+    def _format_attachment_value(self, name: str, level: str) -> str:
+        name = self._clean_text(name)
+        level = self._clean_text(level)
+
+        if not name or self._is_level_only(name):
+            return ""
+
+        if level and level.casefold() not in name.casefold():
+            return f"{name} ({level})"
+
+        return name
+
+    def _is_level_only(self, value: str) -> bool:
+        return bool(re.fullmatch(r"\(?\s*(Niveau|Level|Lvl|Lv\.?)\s*\d+\s*\)?", self._clean_text(value), flags=re.IGNORECASE))
+
+    def _normalize_level(self, value: str) -> str:
+        match = re.search(r"\d+", value)
+        return f"Niveau {match.group(0)}" if match else ""
 
     def _canonical_attachment_label(self, value: str) -> str:
         normalized = self._normalize_label(value)
@@ -301,8 +368,10 @@ class WZStatsScraper:
             ("Accessoire", ("accessoire", "perk", "comb", "bolt", "fire mod")),
         ]
 
+        normalized = normalized.strip(" :：-")
+
         for label, aliases in labels:
-            if any(alias in normalized for alias in aliases):
+            if any(normalized == alias for alias in aliases):
                 return label
 
         return ""

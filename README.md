@@ -39,7 +39,6 @@ Variables obligatoires :
 ```env
 DISCORD_TOKEN=token_du_bot
 CHANNEL_ID=1523456954121588766
-ROLE_ID=id_du_role_call_of_duty
 ```
 
 Variables optionnelles :
@@ -53,7 +52,6 @@ LOG_LEVEL=INFO
 ```
 
 `GUILD_ID` est recommande pour synchroniser rapidement les commandes slash sur un serveur precis.
-`ROLE_ID` doit contenir l'identifiant du role Discord `Call of Duty`. Le bot envoie `<@&ROLE_ID>` avant chaque embed de nouvelle META afin que le ping fonctionne vraiment.
 
 ## Railway
 
