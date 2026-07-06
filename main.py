@@ -156,6 +156,7 @@ def build_weapon_embed(weapon: Weapon, title_prefix: Optional[str] = None) -> di
     embed.add_field(name="🔫 Arme :", value=weapon.name, inline=False)
     embed.add_field(name="⭐ Tier :", value=weapon.tier or "Inconnu", inline=True)
     embed.add_field(name="📂 Type :", value=weapon.weapon_type or "Inconnu", inline=True)
+    embed.add_field(name="🎯 Portée :", value=weapon.range_role or "Polyvalente", inline=True)
     embed.add_field(name="🔧 Build META", value=format_build(weapon), inline=False)
     embed.add_field(name="📊 Source :", value=weapon.url or settings.wzstats_url, inline=False)
 

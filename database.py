@@ -21,6 +21,7 @@ class Database:
                 name TEXT NOT NULL,
                 tier TEXT,
                 weapon_type TEXT,
+                range_role TEXT NOT NULL DEFAULT 'Polyvalente',
                 image_url TEXT,
                 url TEXT NOT NULL,
                 rank INTEGER,
@@ -33,6 +34,7 @@ class Database:
         )
         self._ensure_column("weapons", "build", "TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column("weapons", "build_signature", "TEXT")
+        self._ensure_column("weapons", "range_role", "TEXT NOT NULL DEFAULT 'Polyvalente'")
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS published_weapons (
@@ -81,14 +83,15 @@ class Database:
             self.connection.executemany(
                 """
                 INSERT INTO weapons (
-                    identity, name, tier, weapon_type, image_url, url, rank, attachments,
+                    identity, name, tier, weapon_type, range_role, image_url, url, rank, attachments,
                     build, build_signature, last_seen_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(identity) DO UPDATE SET
                     name = excluded.name,
                     tier = excluded.tier,
                     weapon_type = excluded.weapon_type,
+                    range_role = excluded.range_role,
                     image_url = excluded.image_url,
                     url = excluded.url,
                     rank = excluded.rank,
@@ -103,6 +106,7 @@ class Database:
                         weapon.name,
                         weapon.tier,
                         weapon.weapon_type,
+                        weapon.range_role,
                         weapon.image_url,
                         weapon.url,
                         weapon.rank,
@@ -200,7 +204,7 @@ class Database:
 
     def get_weapons(self, limit: int | None = None) -> list[Weapon]:
         query = """
-            SELECT name, tier, weapon_type, image_url, url, rank, attachments, build
+            SELECT name, tier, weapon_type, range_role, image_url, url, rank, attachments, build
             FROM weapons
             ORDER BY rank ASC, name ASC
         """
@@ -228,6 +232,7 @@ class Database:
                     name=row["name"],
                     tier=row["tier"] or "",
                     weapon_type=row["weapon_type"] or "",
+                    range_role=row["range_role"] or "Polyvalente",
                     image_url=row["image_url"] or "",
                     url=row["url"],
                     rank=row["rank"] or len(weapons) + 1,

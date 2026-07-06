@@ -22,6 +22,7 @@ class Weapon:
     image_url: str
     url: str
     rank: int
+    range_role: str = "Polyvalente"
     attachments: list[str] = field(default_factory=list)
     build: dict[str, str] = field(default_factory=dict)
 
@@ -270,6 +271,7 @@ class WZStatsScraper:
                     "name": displayed_name or name,
                     "tier": current_tier,
                     "weaponType": self._find_weapon_type(" ".join(text_values)),
+                    "rangeRole": self._find_range_role(" ".join(text_values)),
                     "imageUrl": image.src if image else "",
                     "url": url,
                 }
@@ -717,6 +719,10 @@ class WZStatsScraper:
                     image_url=urljoin(self.base_url, str(item.get("imageUrl", ""))),
                     url=url,
                     rank=len(weapons) + 1,
+                    range_role=self._resolve_range_role(
+                        str(item.get("rangeRole", "")),
+                        str(item.get("weaponType", "")),
+                    ),
                     build=dict(item.get("build", {})) if isinstance(item.get("build"), dict) else {},
                 )
             )
@@ -788,6 +794,37 @@ class WZStatsScraper:
                 return short_name
 
         return ""
+
+    def _find_range_role(self, value: str) -> str:
+        normalized = value.casefold()
+
+        if "sniper support" in normalized or "support sniper" in normalized:
+            return "Courte / moyenne portée"
+        if "longue portée" in normalized or "long range" in normalized:
+            return "Longue portée"
+        if "courte portée" in normalized or "short range" in normalized or "close range" in normalized:
+            return "Courte portée"
+        if "moyenne portée" in normalized or "medium range" in normalized or "mid range" in normalized:
+            return "Moyenne portée"
+        if "polyvalent" in normalized or "versatile" in normalized:
+            return "Polyvalente"
+
+        return ""
+
+    def _resolve_range_role(self, explicit_range: str, weapon_type: str) -> str:
+        explicit_range = self._clean_text(explicit_range)
+        if explicit_range:
+            return explicit_range
+
+        normalized_type = self._clean_text(weapon_type).casefold()
+        if normalized_type in {"ar", "lmg", "marksman", "sniper"}:
+            return "Longue portée"
+        if normalized_type in {"smg", "shotgun", "pistol"}:
+            return "Courte portée"
+        if normalized_type == "br":
+            return "Moyenne / longue portée"
+
+        return "Polyvalente"
 
     def _name_from_slug(self, value: str) -> str:
         slug = self._clean_text(value).strip("/").split("/")[-1]
