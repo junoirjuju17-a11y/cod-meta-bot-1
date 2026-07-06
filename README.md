@@ -31,7 +31,6 @@ DATABASE_PATH=data/meta.sqlite3
 WZSTATS_URL=https://wzstats.gg/fr
 CHECK_INTERVAL_MINUTES=10
 LOG_LEVEL=INFO
-ENABLE_BROWSER_FALLBACK=false
 ```
 
 `GUILD_ID` est recommandé pour synchroniser les commandes slash immédiatement sur un serveur précis.
@@ -82,12 +81,6 @@ Sans volume, la base peut être recréée lors d'un redéploiement complet.
 
 WZStats charge son contenu dynamiquement. Le scraper utilise donc Playwright, attend le contenu visible, extrait les cartes d'armes, puis enrichit les premières armes avec les détails disponibles sur leurs pages.
 
-Par défaut, le bot utilise l'API réseau de Playwright pour lire le HTML déjà rendu par WZStats, sans ouvrir Chromium. C'est plus stable sur Railway.
-
-La liste `/meta`, `/top10` et le cycle automatique n'ouvrent jamais Chromium. La variable suivante ne concerne que la récupération optionnelle des accessoires sur `/arme <nom>` :
-
-```env
-ENABLE_BROWSER_FALLBACK=true
-```
+Le bot utilise l'API réseau de Playwright pour lire le HTML renvoyé par WZStats, sans ouvrir Chromium pendant l'exécution. C'est plus stable sur Railway et évite les crashs `Target crashed`.
 
 Si WZStats est temporairement inaccessible, le bot journalise l'erreur et réessaie au cycle suivant sans s'arrêter.
